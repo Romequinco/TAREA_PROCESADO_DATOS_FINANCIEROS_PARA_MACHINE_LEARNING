@@ -23,10 +23,11 @@ A continuación se resume, en forma de diagrama textual, el flujo de datos y dec
    └─ Elegir valor de d y añadir la serie diferenciada al dataframe
       ↓
 3. Construcción y limpieza de la matriz de covarianza
-   ├─ Construir features internas (returns, volatilidad rolling, media rolling, volume change)
-   ├─ Estimar matriz de covarianza empírica
-   ├─ Analizar espectro de eigenvalores
-   ├─ Aplicar eigenvalue clipping y reconstruir matriz limpia
+   ├─ Construir 8 features internas (retornos, volatilidad, tendencia, volumen, 
+   │  momentum, RSI, ATR, volumen relativo)
+   ├─ Estandarizar y estimar matriz de covarianza empírica
+   ├─ Analizar espectro con teoría de Marchenko-Pastur (límites λ_min/λ_max)
+   ├─ Aplicar eigenvalue clipping basado en M-P (reemplazar ruido por λ_max)
    └─ Comparar covarianza original vs limpia
       ↓
 4. Etiquetado de eventos mediante triple barrera
