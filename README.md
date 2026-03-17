@@ -7,7 +7,7 @@ A continuación se resume, en forma de diagrama textual, el flujo de datos y dec
 ```text
 0. Setup, parámetros y carga inicial de datos
    ├─ Definir entorno, rutas, fechas, semilla
-   ├─ Cargar CSV desde Kaggle y filtrar ventana de 30 días
+   ├─ Cargar CSV desde Kaggle y filtrar ventana de 3 años
    └─ Explorar dataset crudo (integridad, tipos, NaNs)
       ↓
 1. Construcción y comparación de barras alternativas
