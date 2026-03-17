@@ -18,7 +18,7 @@ A continuación se resume, en forma de diagrama textual, el flujo de datos y dec
       ↓
 2. Diferenciación fraccional de la serie de precios
    ├─ Introducir concepto y motivación de diferenciación fraccional
-   ├─ Calcular series para varios valores de d (0.0, 0.3, 0.5, 0.8, 1.0)
+   ├─ Calcular series para varios valores de d (0.0, 0.2, 0.4, 0.6, 0.8, 1.0)
    ├─ Evaluar memoria vs estacionariedad (ACF, varianza, etc.)
    └─ Elegir valor de d y añadir la serie diferenciada al dataframe
       ↓
