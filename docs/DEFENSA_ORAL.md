@@ -27,7 +27,7 @@ flowchart LR
 |------|-------|--------|----------------|
 | F1 Carga/limpieza | CSV 7,47M filas Unix-ts | `df_clean` 38 881 filas, 0 NaN | Filtro `DATE_START/END`; ffill limitado a 5 periodos si hay NaN |
 | F2 Barras alternativas | `df_clean` 1-min OHLCV | `df_bars` 9 939 dollar bars | `DOLLAR_THRESHOLD = 500 000 USD`; selección por actividad económica |
-| F3 FFD | `df_bars['close']` | `close_fd` d=0.4, 9 658 obs. | `D_ALTERNATIVO=0.4` por equilibrio memoria/estacionariedad frente a `D_OPTIMO=0.2` |
+| F3 FFD | `df_bars['close']` | `close_fd` d=0.4, 9 658 obs. | En ventana 3 años, `d=0.2` no pasa ADF (p≈0.1199); mínimo estacionario `D_OPTIMO = D_ALTERNATIVO = 0.4` (p≈0.013448, corr≈0.990456) |
 | F4 Features + cov | `df_bars` + `close_fd` | `df_features_final` 9 639×8 + `cov_clean` 8×8 | Marchenko-Pastur λ_max=0.587; 5/8 eigenvalores clipados |
 | F5 Triple barrera | `df_bars['close']` | `labels_main` (1%), `df_labels` 3 esquemas | Threshold 1% → mejor balance clases; 2% → 96 % etiquetas 0 |
 | F6 CV temporal | `df_bars` + `labels_main` | `splits` dict con 3 cortes iloc | Corte por posición ordinal, no por fecha; sin shuffle |
@@ -52,7 +52,7 @@ flowchart LR
 
 **Problema que resuelve**: la serie de precios `close` es I(1) (no estacionaria); diferenciarla entero (d=1) destruye toda la memoria, eliminando información predictiva que los modelos de ML necesitan.
 
-**Implementación**: `get_weights_ffd(d, threshold)` calcula pesos recursivos mediante \(w_0 = 1,\ w_k = -w_{k-1}\frac{d-k+1}{k}\) hasta que \(|w_k| < \texttt{FRACDIFF\_THRESHOLD} = 10^{-4}\). `frac_diff_ffd(series, d, threshold)` aplica la convolución \(\tilde{x}_t = \sum_{k=0}^{l} w_k\, x_{t-k}\) sobre la serie de cierre de `df_bars`. Se prueban d ∈ {0.0, 0.2, 0.4, 0.6, 0.8, 1.0}. El test ADF selecciona `D_OPTIMO = 0.2` (p=0.0044, corr=0.961) y `D_ALTERNATIVO = 0.4` (p=0.000001, corr=0.813). Se usa d=0.4 por mayor robustez estadística, sacrificando ~15 % de correlación con la serie original. Se pierden ~281 filas por la ventana de convolución.
+**Implementación**: `get_weights_ffd(d, threshold)` calcula pesos recursivos mediante \(w_0 = 1,\ w_k = -w_{k-1}\frac{d-k+1}{k}\) hasta que \(|w_k| < \texttt{FRACDIFF\_THRESHOLD} = 10^{-4}\). `frac_diff_ffd(series, d, threshold)` aplica la convolución \(\tilde{x}_t = \sum_{k=0}^{l} w_k\, x_{t-k}\) sobre la serie de cierre de `df_bars`. Se prueban d ∈ {0.0, 0.2, 0.4, 0.6, 0.8, 1.0}. En ventana de 3 años, `d=0.2` no es estacionario (p≈0.1199), mientras que `d=0.4` sí lo es (p≈0.013448) y además conserva alta correlación (corr≈0.990456). Por tanto, `D_OPTIMO = D_ALTERNATIVO = 0.4`: en este caso coinciden (aunque el pipeline mantiene el concepto de D_ALTERNATIVO porque en otros activos/ventanas podría diferir). Se pierden ~281 filas por la ventana de convolución.
 
 **Parámetro clave**: `d` | 0.4 | si sube → más estacionaria, menos memoria (corr↓); si baja → más memoria, riesgo de no-estacionariedad residual.
 
@@ -113,12 +113,12 @@ El threshold dinámico (`log_return.rolling(20).std() × 1.5`) invierte la distr
 | d | p-value ADF | Correlación c/ original | Decisión |
 |---|-------------|------------------------|----------|
 | 0.0 | — (no estac.) | 1.000 | Descartado: I(1) |
-| 0.2 | 0.004378 | 0.961 | D_OPTIMO (mínimo d estacionario) |
-| 0.4 | 0.000001 | 0.813 | **D_ALTERNATIVO ← seleccionado** |
+| 0.2 | ≈0.1199 | — | No estacionario (descartado) |
+| 0.4 | ≈0.013448 | ≈0.990456 | **D_OPTIMO = D_ALTERNATIVO ← selección final** |
 | 0.6 | <0.000001 | ~0.60 | Más estacionario, menos memoria |
 | 1.0 | <0.000001 | ~0.10 | Diferenciación entera, memoria destruida |
 
-Criterio: mínimo d tal que p_ADF < 0.05, preferiendo d=0.4 por mayor margen estacionario (p seis órdenes de magnitud más pequeño que el nivel de significancia).
+Criterio: mínimo d tal que p_ADF < 0.05. En esta ventana, el mínimo estacionario es d=0.4 y además coincide con el valor robusto del pipeline (D_ALTERNATIVO).
 
 ---
 
@@ -152,7 +152,7 @@ flowchart LR
     MLAM["MLAM 2020\n(Machine Learning for\nAsset Managers)"]
 
     AFML -->|Cap. 2| B["Dollar Bars\n9 939 barras\n500 K USD/barra"]
-    AFML -->|Cap. 5| C["FFD\nd=0.4\np=0.000001"]
+    AFML -->|Cap. 5| C["FFD\nd=0.4\np≈0.013448"]
     AFML -->|Cap. 3| D["Triple Barrera\n3 esquemas\n1%/2%/dyn"]
     AFML -->|Cap. 7| E["CV Temporal\n70/30·80/20·90/10\npor iloc"]
     MLAM -->|Cap. 2-3| F["Cov Cleaning\nM-P λ_max=0.587\n5/8 clipados"]
@@ -177,7 +177,7 @@ flowchart LR
 | Pregunta probable | Respuesta en 2-3 frases |
 |-------------------|-------------------------|
 | **¿Por qué dollar bars y no time bars?** | Las barras temporales asignan el mismo peso a un minuto con 1 USD negociado que a uno con 1 millón. Las dollar bars normalizan por flujo de capital (close × volume), haciendo que cada barra represente la misma actividad económica. El resultado empírico es una distribución de retornos con menor curtosis y asimetría, más adecuada para modelos que asumen normalidad o estacionariedad. |
-| **¿Cómo elegiste el valor de d?** | El criterio automático selecciona el mínimo d con p_ADF < 0.05: en este caso d=0.2 (p=0.0044). Sin embargo, se seleccionó d=0.4 porque su p-value es 0.000001 —seis órdenes de magnitud menor—, lo que da mayor margen frente a posible no-estacionariedad residual, sacrificando un 15 % de correlación con la serie original (0.813 vs 0.961). |
+| **¿Cómo elegiste el valor de d?** | Con la ventana de 3 años, el mínimo d que cumple p_ADF < 0.05 es d=0.4: d=0.2 no pasa ADF (p≈0.1199), mientras que d=0.4 sí (p≈0.013448) y mantiene alta correlación (corr≈0.990456). Por eso aquí `D_OPTIMO = D_ALTERNATIVO = 0.4` (aunque el pipeline conserva el concepto de D_ALTERNATIVO porque en otros activos/ventanas podría diferir). |
 | **¿Tiene sentido limpiar la covarianza con un solo activo?** | Con un solo activo se construyen 8 features internas correlacionadas; la covarianza sigue siendo estimable y el clipping tiene fundamento teórico (γ=0.08 < 1). Sin embargo, el beneficio práctico es limitado porque no hay diversificación cross-asset; la técnica es más valiosa en portfolios con decenas de activos donde γ se acerca a 1. |
 | **¿Qué ocurre si dos barreras se tocan en la misma barra?** | En la implementación, el bucle recorre las barras de la ventana en orden cronológico y sale en el primer cruce. Si en una misma barra la barrera superior e inferior se tocan simultáneamente (gap extremo), la comparación `price >= pt` tiene prioridad por estar primero en el condicional; en datos reales de BTC eso es prácticamente imposible en ventanas de 20 dollar bars de 500 K USD. |
 | **¿Por qué no usar sklearn `TimeSeriesSplit`?** | `TimeSeriesSplit` genera múltiples folds walk-forward ideales para evaluar estabilidad temporal, pero requiere k reentrenamientos y complica la comparación directa de tamaños de train. Los cortes únicos por `iloc` son más directos para el objetivo del ejercicio: comparar el efecto del ratio de entrenamiento sobre la misma partición cronológica. La extensión correcta es Purged k-fold de AFML Cap. 7, que además purga el solapamiento de etiquetas de triple barrera. |
