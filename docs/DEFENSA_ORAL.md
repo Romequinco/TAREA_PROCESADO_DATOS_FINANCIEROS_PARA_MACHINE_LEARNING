@@ -20,7 +20,7 @@ flowchart LR
     F2 -->|"precios wide\nrejilla 5-min\np=10"| F3
     F3 -->|"df_features_final\np=10 (estandarizadas)\n+ cov_clean\n10×10"| F4
     F4 -->|"labels_main\n9 919 obs.\n1%/2%/dyn"| F5
-    F5 -->|"splits dict\n70/30·80/20·90/10\npor iloc"| F6
+    F5 -->|"splits dict\nKFold + purge/embargo\n(config visual 70/80/90)"| F6
 ```
 
 | Fase | Input | Output | Decisión clave |
@@ -30,7 +30,7 @@ flowchart LR
 | F3 Cov cleaning | `data/datos_crypto_limpios.parquet` (wide, 5-min) | `df_features_final` (p=10) + `cov_clean` 10×10 | Subventana últimos 3 años: M-P; ruido (λ ≤ e_max) → `noise_replacement = media_ruido` (Constant Residual) |
 | F4 Features + cov | `df_features_final` | `cov_clean` 10×10 | Denoising MP + eigenvalue clipping (Constant Residual): ruido → `media_ruido` |
 | F5 Triple barrera | `df_bars['close']` | `labels_main` (1%), `df_labels` 3 esquemas | Threshold 1% → mejor balance clases; 2% → 96 % etiquetas 0 |
-| F6 CV temporal | `df_bars` + `labels_main` | `splits` dict con 3 cortes iloc | Corte por posición ordinal, no por fecha; sin shuffle |
+| F6 CV temporal | `df_bars` + `labels_main` | `splits` dict construido por folds `KFold(n_splits=...)` | Para cada fold se derivan explícitamente `purge` y `embargo` (según `t1`/horizonte de triple barrera) para evitar solape temporal y reducir leakage |
 
 ---
 
@@ -147,7 +147,7 @@ flowchart LR
     AFML -->|Cap. 2| B["Dollar Bars\n128 613 barras\n500 K USD/barra"]
     AFML -->|Cap. 5| C["FFD\nd=0.4\np≈0.013448"]
     AFML -->|Cap. 3| D["Triple Barrera\n3 esquemas\n1%/2%/dyn"]
-    AFML -->|Cap. 7| E["CV Temporal\n70/30·80/20·90/10\npor iloc"]
+    AFML -->|Cap. 7| E["CV Temporal\nKFold + purge/embargo\n(config visual 70/80/90)"]
 MLAM -->|Cap. 2-3| F["Cov Cleaning\nM-P e_max\nruido → media_ruido (Constant Residual)"]
 ```
 
@@ -161,7 +161,7 @@ MLAM -->|Cap. 2-3| F["Cov Cleaning\nM-P e_max\nruido → media_ruido (Constant R
 | FracDiff varios d | `frac_diff_ffd` aplicado a d ∈ {0.0, 0.2, 0.4, 0.6, 0.8, 1.0}; tabla ADF con p-value y correlación; selección D_ALTERNATIVO=0.4 | Series diferenciadas 3×2 + curva correlación vs d con anotaciones |
 | Limpieza covarianza | `np.linalg.eigh` → M-P (σ²=1; umbral `e_max`) → ruido (λ ≤ e_max) reemplazado por `noise_replacement = media_ruido` (Constant Residual) → reconstrucción; cov empírica vs cov_clean | Espectro eigenvalores con límites M-P + heatmap comparativo empírica vs limpia |
 | Triple barrera varios thresholds | `get_labels` con threshold_1pct, threshold_2pct y threshold dinámico (vol×1.5); distribuciones {18.3/65.3/16.4%}, {2.2/96.2/1.6%}, {50.5/1.1/48.4%} | Distribución etiquetas 1×3 + serie close con puntos coloreados 3×1 |
-| CV temporal varios porcentajes | Cortes por `iloc` en 70/30, 80/20, 90/10; sin shuffle; sin mezcla de índices futuros | Line plot con zonas train/test sombreadas + diagrama de bloques temporal |
+| CV temporal varios porcentajes | Particionado por folds `KFold(n_splits=...)`; para cada fold se construyen `purge` y `embargo` para evitar solape temporal (labels de triple barrera) | Visualización de train/test/purga/embargo por fold + diagrama de bloques temporal |
 
 ---
 
@@ -173,5 +173,5 @@ MLAM -->|Cap. 2-3| F["Cov Cleaning\nM-P e_max\nruido → media_ruido (Constant R
 | **¿Cómo elegiste el valor de d?** | Con la ventana de 3 años, el mínimo d que cumple p_ADF < 0.05 es d=0.4: d=0.2 no pasa ADF (p≈0.1199), mientras que d=0.4 sí (p≈0.013448) y mantiene alta correlación (corr≈0.990456). Por eso aquí `D_OPTIMO = D_ALTERNATIVO = 0.4` (aunque el pipeline conserva el concepto de D_ALTERNATIVO porque en otros activos/ventanas podría diferir). |
 | **¿Tiene sentido limpiar la covarianza con p=10 activos (cryptos)?** | Sí: la covarianza empírica estimada en una muestra finita es ruidosa y mezcla señal con bulk espurio. Marchenko–Pastur separa ruido vs señal usando el umbral `e_max` (M-P, σ²=1) y el denoising reemplaza el bulk ruidoso con `noise_replacement = media_ruido` (Constant Residual), preservando la señal con λ > e_max. |
 | **¿Qué ocurre si dos barreras se tocan en la misma barra?** | En la implementación, el bucle recorre las barras de la ventana en orden cronológico y sale en el primer cruce. Si en una misma barra la barrera superior e inferior se tocan simultáneamente (gap extremo), la comparación `price >= pt` tiene prioridad por estar primero en el condicional; en datos reales de BTC eso es prácticamente imposible en ventanas de 20 dollar bars de 500 K USD. |
-| **¿Por qué no usar sklearn `TimeSeriesSplit`?** | `TimeSeriesSplit` genera múltiples folds walk-forward ideales para evaluar estabilidad temporal, pero requiere k reentrenamientos y complica la comparación directa de tamaños de train. Los cortes únicos por `iloc` son más directos para el objetivo del ejercicio: comparar el efecto del ratio de entrenamiento sobre la misma partición cronológica. La extensión correcta es Purged k-fold de AFML Cap. 7, que además purga el solapamiento de etiquetas de triple barrera. |
+| **¿Por qué no usar sklearn `TimeSeriesSplit`?** | `TimeSeriesSplit` genera folds walk-forward reentrenando el modelo en cada etapa. Aquí la comparación se centra en distintas configuraciones de la partición temporal usando `KFold` y construyendo explícitamente `purge`/`embargo` por fold para mitigar el solape de etiquetas de triple barrera (y la autocorrelación), siguiendo la motivación de AFML Cap. 7. |
 | **¿Qué mejorarías con más tiempo o datos?** | Tres mejoras concretas: (1) Re-estimar d en cada ventana de reentrenamiento para evitar look-ahead en la selección del d óptimo. (2) Sustituir los splits únicos por Purged k-fold con embargo para eliminar leakage de las ventanas de triple barrera solapadas. (3) Añadir sample weights (método de retornos únicos, AFML Cap. 4) para penalizar observaciones solapadas y reducir el efecto de la correlación serial en las etiquetas. |
