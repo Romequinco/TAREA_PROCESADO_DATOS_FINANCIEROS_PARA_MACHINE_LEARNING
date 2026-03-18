@@ -26,8 +26,8 @@ A continuación se resume, en forma de diagrama textual, el flujo de datos y dec
    ├─ Cargar precios wide desde `data/datos_crypto_limpios.parquet` (índice 5-min) con 10 cryptos (p=10)
    ├─ Construir X como retornos log por activo: `X = np.log(prices).diff().dropna(how="any")`
    ├─ Estandarizar (StandardScaler) y estimar covarianza empírica en los últimos 3 años por fecha
-   ├─ Analizar espectro con Marchenko-Pastur (p=10, N=len(df_cov_window), γ=p/N; límites λ_min/λ_max)
-   ├─ Denoising con eigenvalue clipping: ruido (λ ≤ λ_max_mp) → `noise_replacement = λ_max_mp`
+   ├─ Analizar espectro con Marchenko–Pastur (p=10, usando los parámetros efectivos del bulk; umbral MP `e_max`)
+   ├─ Denoising con “Constant Residual” (López de Prado): ruido (λ ≤ e_max) → `noise_replacement = media_ruido` (promedio del bulk ruidoso)
    └─ Comparar covarianza original vs limpia
       ↓
 4. Etiquetado de eventos mediante triple barrera
