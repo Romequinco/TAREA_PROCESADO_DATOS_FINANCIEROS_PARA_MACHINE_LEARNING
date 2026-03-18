@@ -23,11 +23,11 @@ A continuación se resume, en forma de diagrama textual, el flujo de datos y dec
    └─ Elegir valor de d y añadir la serie diferenciada al dataframe
       ↓
 3. Construcción y limpieza de la matriz de covarianza
-   ├─ Construir 8 features internas (retornos, volatilidad, tendencia, volumen, 
-   │  momentum, RSI, ATR, volumen relativo)
-   ├─ Estandarizar y estimar matriz de covarianza empírica
-   ├─ Analizar espectro con teoría de Marchenko-Pastur (límites λ_min/λ_max)
-   ├─ Aplicar eigenvalue clipping basado en M-P (reemplazar ruido por λ_max)
+   ├─ Cargar precios wide desde `data/datos_crypto_limpios.parquet` (índice 5-min) con 10 cryptos (p=10)
+   ├─ Construir X como retornos log por activo: `X = np.log(prices).diff().dropna(how="any")`
+   ├─ Estandarizar (StandardScaler) y estimar covarianza empírica en los últimos 3 años por fecha
+   ├─ Analizar espectro con Marchenko-Pastur (p=10, N=len(df_cov_window), γ=p/N; límites λ_min/λ_max)
+   ├─ Denoising con eigenvalue clipping: ruido (λ ≤ λ_max_mp) → `noise_replacement = λ_max_mp`
    └─ Comparar covarianza original vs limpia
       ↓
 4. Etiquetado de eventos mediante triple barrera

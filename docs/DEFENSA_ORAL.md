@@ -10,15 +10,15 @@ flowchart LR
     RAW["CSV Kaggle\n7 468 963 filas\n1-min OHLCV"]
     F1["F1\nLimpieza"]
     F2["F2\nBarras alt."]
-    F3["F3\nFFD"]
+    F3["F3\nCov cleaning\n(parquet wide)"]
     F4["F4\nFeatures + Cov"]
     F5["F5\nTriple barrera"]
     F6["F6\nCV temporal"]
 
     RAW -->|"df_clean\n1 577 081 filas\nDATE_START→DATE_END"| F1
     F1 -->|"df_bars\n128 613 dollar bars\n500 K USD/barra"| F2
-    F2 -->|"close_fd\nd=0.4\n9 658 obs."| F3
-    F3 -->|"df_features\n9 639 × 8\nescaladas"| F4
+    F2 -->|"precios wide\nrejilla 5-min\np=10"| F3
+    F3 -->|"df_features_final\np=10 (estandarizadas)\n+ cov_clean\n10×10"| F4
     F4 -->|"labels_main\n9 919 obs.\n1%/2%/dyn"| F5
     F5 -->|"splits dict\n70/30·80/20·90/10\npor iloc"| F6
 ```
@@ -27,8 +27,8 @@ flowchart LR
 |------|-------|--------|----------------|
 | F1 Carga/limpieza | CSV 7,47M filas Unix-ts | `df_clean` 1 577 081 filas, 0 NaN | Filtro `DATE_START/END`; ffill limitado a 5 periodos si hay NaN |
 | F2 Barras alternativas | `df_clean` 1-min OHLCV | `df_bars` 128 613 dollar bars | `DOLLAR_THRESHOLD = 500 000 USD`; selección por actividad económica |
-| F3 FFD | `df_bars['close']` | `close_fd` d=0.4, 9 658 obs. | En ventana 3 años, `d=0.2` no pasa ADF (p≈0.1199); mínimo estacionario `D_OPTIMO = D_ALTERNATIVO = 0.4` (p≈0.013448, corr≈0.990456) |
-| F4 Features + cov | `df_bars` + `close_fd` | `df_features_final` 9 639×8 + `cov_clean` 8×8 | Marchenko-Pastur λ_max≈0.413454; 5/8 eigenvalores clipados |
+| F3 Cov cleaning | `data/datos_crypto_limpios.parquet` (wide, 5-min) | `df_features_final` (p=10) + `cov_clean` 10×10 | Subventana últimos 3 años: M-P con γ=p/N; ruido (λ ≤ λ_max_mp) → `noise_replacement = λ_max_mp` |
+| F4 Features + cov | `df_features_final` | `cov_clean` 10×10 | Denoising MP + eigenvalue clipping basado en λ_max_mp (ruido → λ_max_mp) |
 | F5 Triple barrera | `df_bars['close']` | `labels_main` (1%), `df_labels` 3 esquemas | Threshold 1% → mejor balance clases; 2% → 96 % etiquetas 0 |
 | F6 CV temporal | `df_bars` + `labels_main` | `splits` dict con 3 cortes iloc | Corte por posición ordinal, no por fecha; sin shuffle |
 
@@ -62,22 +62,19 @@ flowchart LR
 
 #### 3. Limpieza espectral de covarianza (eigenvalue clipping M-P) — MLAM 2020, Cap. 2-3
 
-**Problema que resuelve**: con N=100 observaciones y p=8 features (γ=p/N=0.08), la covarianza empírica mezcla señal real con varianza muestral espuria; usarla directamente en modelos que dependan de su inversa (mínima varianza, PCA) amplifica el ruido.
+**Problema que resuelve**: con p=10 activos y una muestra finita de observaciones, la covarianza empírica mezcla señal de co-movimiento real con varianza muestral espuria; al usar su inversión para optimización o PCA, el ruido puede sesgar estimaciones.
 
-**Implementación paso a paso**:
-1. `np.linalg.eigh(cov_matrix)` — descomposición de la matriz simétrica en eigenvalores reales y eigenvectores ortonormales; `eigh` es más estable que `eig` para matrices simétricas.
-2. Ordenar eigenvalores descendente: λ₁=2.303 > λ₂=1.695 > λ₃=0.796 > … > λ₈=0.015.
-3. Calcular límites de Marchenko-Pastur: σ²=mediana(λ)=0.251235; λ_max=σ²(1+√γ)²=**0.413454**; λ_min=σ²(1-√γ)²=0.129214.
-4. Clipar: los 5 eigenvalores ≤ λ_max se reemplazan por λ_max; los 3 eigenvalores > λ_max (señal real, 83.6 % de la varianza) se preservan.
-5. Reconstruir: `cov_clean = Q @ diag(λ_clipped) @ Q.T`; simetrizar: `(M + M.T)/2` para eliminar errores numéricos de punto flotante.
+**Implementación paso a paso** (en esta versión del notebook):
+1. Cargar precios wide desde `data/datos_crypto_limpios.parquet` (rejilla 5-min; columnas = 10 cryptos).
+2. Construir la matriz de observaciones como retornos log por activo: `X = np.log(prices).diff().dropna(how="any")`.
+3. Estandarizar por columna (StandardScaler) y estimar la covarianza empírica sobre los **últimos 3 años por fecha** (`df_cov_window = df_features_scaled.loc[start_ts:end_ts]`).
+4. Marchenko–Pastur: con p=len(cov_matrix.columns) y N=len(df_cov_window), definir `gamma = p/N` (validando `gamma < 1`). Estimar σ² como la **mediana** de los eigenvalores y calcular los límites teóricos `lambda_min_mp` y `lambda_max_mp`.
+5. Denoising (López de Prado / eigenvalue clipping): clasificar como **ruido** los eigenvalores con `λ ≤ lambda_max_mp` y reemplazarlos por un único valor constante `noise_replacement = lambda_max_mp`. Los eigenvalores de **señal** (`λ > lambda_max_mp`) se preservan intactos.
+6. Reconstruir `cov_clean = Q @ diag(λ_clipped) @ Q.T` y simetrizar con `(M + M.T)/2`.
 
-Norma de Frobenius ||cov_empírica − cov_clean|| = 0.956 (impacto moderado; `rolling_mean` y `atr` son las features más afectadas con diferencia diagonal de −0.556 y −0.442).
+**Parámetro clave**: la subventana temporal (últimos 3 años) y, por tanto, el ratio `gamma = p/N`. Un N mayor reduce γ y hace la frontera MP más estable.
 
-**Diferencia con Marchenko-Pastur puro**: en lugar de un percentil ad-hoc, el umbral λ_max se deriva analíticamente de γ y σ², lo que hace el criterio reproducible y fundamentado en teoría de matrices aleatorias.
-
-**Parámetro clave**: `COV_WINDOW` | 100 barras | si sube → γ↓, λ_max más estable, estimación más fiable; si baja → γ↑, más eigenvalores se clasifican como ruido, reconstrucción más agresiva.
-
-**Limitación**: con un solo activo (p=8 features derivadas de BTC), la covarianza captura co-movimiento interno de indicadores correlacionados, no diversificación cross-asset; el clipping es metodológicamente correcto pero su impacto práctico sobre un portfolio de un solo activo es limitado.
+**Limitación**: el desempeño depende de que el régimen de ruido sea aproximadamente compatible con el supuesto de Marchenko–Pastur; si la ventana temporal se reduce o aumenta p y γ se acerca a 1, el clipping puede volverse más agresivo.
 
 ---
 
@@ -155,7 +152,7 @@ flowchart LR
     AFML -->|Cap. 5| C["FFD\nd=0.4\np≈0.013448"]
     AFML -->|Cap. 3| D["Triple Barrera\n3 esquemas\n1%/2%/dyn"]
     AFML -->|Cap. 7| E["CV Temporal\n70/30·80/20·90/10\npor iloc"]
-    MLAM -->|Cap. 2-3| F["Cov Cleaning\nM-P λ_max≈0.413454\n5/8 clipados"]
+    MLAM -->|Cap. 2-3| F["Cov Cleaning\nM-P λ_max_mp\nruido → λ_max_mp"]
 ```
 
 ---
@@ -166,7 +163,7 @@ flowchart LR
 |-------------|----------------|--------------------------|
 | Dollar/Volume/Tick bars | Tres funciones con bucle explícito; umbrales: TICK=10, VOL=10 BTC, DOL=500 K USD; resultados: 157 852 / 137 729 / 128 613 barras | Comparación visual `close` 4 subplots + distribución retornos + zoom colas |
 | FracDiff varios d | `frac_diff_ffd` aplicado a d ∈ {0.0, 0.2, 0.4, 0.6, 0.8, 1.0}; tabla ADF con p-value y correlación; selección D_ALTERNATIVO=0.4 | Series diferenciadas 3×2 + curva correlación vs d con anotaciones |
-| Limpieza covarianza | `np.linalg.eigh` → clipping M-P λ_max≈0.413454 → reconstrucción; 5/8 eigenvalores modificados; norma diff=0.956 | Espectro eigenvalores con límites M-P + heatmap comparativo empírica vs limpia |
+| Limpieza covarianza | `np.linalg.eigh` → M-P (λ_min/λ_max_mp) → ruido (λ ≤ λ_max_mp) reemplazado por `noise_replacement = λ_max_mp` → reconstrucción; cov empírica vs cov_clean | Espectro eigenvalores con límites M-P + heatmap comparativo empírica vs limpia |
 | Triple barrera varios thresholds | `get_labels` con threshold_1pct, threshold_2pct y threshold dinámico (vol×1.5); distribuciones {18.3/65.3/16.4%}, {2.2/96.2/1.6%}, {50.5/1.1/48.4%} | Distribución etiquetas 1×3 + serie close con puntos coloreados 3×1 |
 | CV temporal varios porcentajes | Cortes por `iloc` en 70/30, 80/20, 90/10; sin shuffle; sin mezcla de índices futuros | Line plot con zonas train/test sombreadas + diagrama de bloques temporal |
 
@@ -178,7 +175,7 @@ flowchart LR
 |-------------------|-------------------------|
 | **¿Por qué dollar bars y no time bars?** | Las barras temporales asignan el mismo peso a un minuto con 1 USD negociado que a uno con 1 millón. Las dollar bars normalizan por flujo de capital (close × volume), haciendo que cada barra represente la misma actividad económica. El resultado empírico es una distribución de retornos con menor curtosis y asimetría, más adecuada para modelos que asumen normalidad o estacionariedad. |
 | **¿Cómo elegiste el valor de d?** | Con la ventana de 3 años, el mínimo d que cumple p_ADF < 0.05 es d=0.4: d=0.2 no pasa ADF (p≈0.1199), mientras que d=0.4 sí (p≈0.013448) y mantiene alta correlación (corr≈0.990456). Por eso aquí `D_OPTIMO = D_ALTERNATIVO = 0.4` (aunque el pipeline conserva el concepto de D_ALTERNATIVO porque en otros activos/ventanas podría diferir). |
-| **¿Tiene sentido limpiar la covarianza con un solo activo?** | Con un solo activo se construyen 8 features internas correlacionadas; la covarianza sigue siendo estimable y el clipping tiene fundamento teórico (γ=0.08 < 1). Sin embargo, el beneficio práctico es limitado porque no hay diversificación cross-asset; la técnica es más valiosa en portfolios con decenas de activos donde γ se acerca a 1. |
+| **¿Tiene sentido limpiar la covarianza con p=10 activos (cryptos)?** | Sí: la covarianza empírica estimada en una muestra finita es ruidosa y mezcla señal con bulk espurio. Marchenko–Pastur separa ruido vs señal usando γ=p/N en la subventana temporal (últimos 3 años) y el denoising reemplaza el bulk con `noise_replacement = λ_max_mp` (preservando la señal con λ > λ_max_mp). |
 | **¿Qué ocurre si dos barreras se tocan en la misma barra?** | En la implementación, el bucle recorre las barras de la ventana en orden cronológico y sale en el primer cruce. Si en una misma barra la barrera superior e inferior se tocan simultáneamente (gap extremo), la comparación `price >= pt` tiene prioridad por estar primero en el condicional; en datos reales de BTC eso es prácticamente imposible en ventanas de 20 dollar bars de 500 K USD. |
 | **¿Por qué no usar sklearn `TimeSeriesSplit`?** | `TimeSeriesSplit` genera múltiples folds walk-forward ideales para evaluar estabilidad temporal, pero requiere k reentrenamientos y complica la comparación directa de tamaños de train. Los cortes únicos por `iloc` son más directos para el objetivo del ejercicio: comparar el efecto del ratio de entrenamiento sobre la misma partición cronológica. La extensión correcta es Purged k-fold de AFML Cap. 7, que además purga el solapamiento de etiquetas de triple barrera. |
 | **¿Qué mejorarías con más tiempo o datos?** | Tres mejoras concretas: (1) Re-estimar d en cada ventana de reentrenamiento para evitar look-ahead en la selección del d óptimo. (2) Sustituir los splits únicos por Purged k-fold con embargo para eliminar leakage de las ventanas de triple barrera solapadas. (3) Añadir sample weights (método de retornos únicos, AFML Cap. 4) para penalizar observaciones solapadas y reducir el efecto de la correlación serial en las etiquetas. |
