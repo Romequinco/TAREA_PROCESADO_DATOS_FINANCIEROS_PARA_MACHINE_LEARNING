@@ -119,25 +119,21 @@ Criterio: mínimo d tal que p_ADF < 0.05. En esta ventana, el mínimo estacionar
 
 ---
 
-#### 6. Validación cruzada temporal — AFML 2018, Cap. 7
+##### 6. Validación cruzada temporal — AFML 2018, Cap. 7
 
-**Problema que resuelve**: el k-fold clásico con shuffle mezcla observaciones de futuro en el entrenamiento. Ejemplo concreto: si la barra 8 000 cae en el fold de train y la 7 999 en test, el modelo aprende patrones que incluyen implícitamente información de los segundos siguientes al periodo de evaluación; los retornos del 1% en dollar bars son autocorelacionados en ventana de 20 barras, amplificando el leakage.
+**Problema que resuelve**: el k-fold clásico (con particiones aleatorias) mezcla observaciones de futuro en el entrenamiento. En este pipeline, las etiquetas generadas por triple barrera pueden solaparse temporalmente y, además, existe autocorrelación, lo que puede introducir leakage.
 
-**Implementación**: corte único por `iloc` en tres ratios:
-```
-split_70 → train = df[:int(0.70*n)], test = df[int(0.70*n):]
-split_80 → train = df[:int(0.80*n)], test = df[int(0.80*n):]
-split_90 → train = df[:int(0.90*n)], test = df[int(0.90*n):]
-```
-Se usa `iloc` (posición ordinal) en lugar de corte por fecha para garantizar proporciones exactas independientemente de huecos temporales o distribución irregular de barras.
+**Implementación (Purged/Embargoed CV)**: en lugar de usar un único corte fijo, se aplica `KFold` sobre índices ordinales (posición en el dataset). Para cada fold “test” se construyen explícitamente los subconjuntos:
+- **Purga (purge)**: eventos que empiezan antes del test pero cuyo “tiempo efectivo” (`t1`) cae dentro/afecta la zona del test (evitan solapamiento por horizonte).
+- **Embargo (embargo)**: un bloque posterior al test que se excluye del entrenamiento para reducir correlación serial y solape temporal residual.
 
-**Por qué no sklearn `TimeSeriesSplit`**: `TimeSeriesSplit` genera k folds con ventana creciente (walk-forward), útil para evaluar estabilidad del modelo en el tiempo, pero requiere reentrenar k veces. Los splits únicos aquí definidos son suficientes para una primera evaluación y más interpretables para comparar el efecto del tamaño del periodo de entrenamiento.
+Esta lógica se implementa con `get_cv_labels_visual(...)` y `get_cv_labels_fixed_proportions(...)`, y se visualiza con:
+- `plot_enhanced_cv_proportional(...)` usando **distintos números de folds** para representar configuraciones “70/80/90” (en la práctica: 3, 5 y 10 folds).
+- `plot_cv_final_fixed_ratios(...)` para fijar proporciones relativas de purga/embargo.
 
-**Extensión más robusta**: Purged k-fold (AFML Cap. 7) añade un gap de purga entre train y test para eliminar observaciones cuya etiqueta se solapa temporalmente con la ventana de test, resolviendo el leakage introducido por el solapamiento de las ventanas de triple barrera.
+**Parámetro clave**: el tamaño de entrenamiento “efectivo” cambia con el número de folds (y con el tamaño relativo de purge/embargo), de forma que configuraciones con más folds dejan un test más pequeño y un train más grande, ajustando el compromiso entre representatividad y riesgo de leakage.
 
-**Parámetro clave**: ratio train | 70/80/90 % | ratio mayor → más datos de entrenamiento pero test más corto y menos representativo de condiciones recientes.
-
-**Limitación**: un único corte temporal no detecta inestabilidad del modelo bajo distintos regímenes de mercado (tendencia, lateralidad, volatilidad extrema).
+**Limitación**: aunque la purga/embargo reduce el leakage por solape temporal, estas particiones visuales no equivalen a un walk-forward reentrenado (tipo `TimeSeriesSplit`) y, por tanto, pueden no reflejar cambios de régimen de forma tan granular.
 
 ---
 
